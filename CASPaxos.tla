@@ -128,13 +128,96 @@ Sending a message just means adding it to the set of all messages.
 Send(m) == msgs' = msgs \cup {m}
 
 (***************************************************************************
-Stub actions for actually sending messages.
+A ballot is started by sending a prepare request (with the hope that
+responses will be received from a quorum).  We could allow multiple
+prepare requests for a single ballot, but since they are all identical
+and we already model multiple-receipt for all messages, this adds only
+state space complexity.  So a ballot will only be prepared once in this
+model.
  ***************************************************************************)
-PrepareReq(b) == FALSE
-PrepareRsp(a) == FALSE
-AcceptReq(b, v) == FALSE
-AcceptRsp(a) == FALSE
+BallotActive(b) == \E m \in msgs :
+                        /\ m.type = "prepare-req"
+                        /\ m.bal = b
+PrepareReq(b) ==
+    /\ ~ BallotActive(b)
+    /\ Send([
+                type |-> "prepare-req",
+                bal  |-> b
+           ])
+    /\ UNCHANGED(<<prepared, accepted, value>>)
 
+(***************************************************************************
+A prepare response can be sent if by an acceptor if a) a response was
+demanded via a prepare request and b) the acceptor has not already
+prepared that or any larger ballot.  On success, the acceptor remembers
+that it has prepared the new ballot, and sends to response.
+ ***************************************************************************)
+PrepareRsp(a) ==
+    /\ \E m \in msgs :
+        /\ m.type = "prepare-req"
+        /\ m.bal > prepared[a]
+        /\ prepared' = [prepared EXCEPT ![a] = m.bal]
+        /\ Send([
+                    acc      |-> a,
+                    type     |-> "prepare-rsp",
+                    promised |-> m.bal,
+                    accepted |-> accepted[a],
+                    val      |-> value[a]
+               ])
+    /\ UNCHANGED <<accepted, value>>
+
+(***************************************************************************
+An accept request can only be sent (i.e.  be fabricated from thin air)
+if a) once; b) if prepare responses for the ballot have been received
+from a quorum; c) with a new value based on the most recently accepted
+value from the prepare responses.
+ ***************************************************************************)
+AcceptReq(b, v) ==
+    /\ ~ \E m \in msgs : m.type = "accept-req" /\ m.bal = b
+    /\ \E Q \in Quorums :
+        LET M == {m \in msgs : /\ m.type = "prepare-rsp"
+                               /\ m.promised = b
+                               /\ m.acc \in Q}
+        IN /\ \A a \in Q : \E m \in M : m.acc = a
+           /\ \E m \in M :
+                /\ m.val = v
+                /\ \A mm \in M : mm.accepted \leq m.accepted
+    /\ LET newVal == Mutator(b, v) \* crucial difference from Paxos
+       IN Send([
+                type   |-> "accept-req",
+                bal    |-> b,
+                newVal |-> newVal
+               ])
+    /\ UNCHANGED(<<accepted, value, prepared>>)
+
+(***************************************************************************
+An acceptor can reply to an accept request only if it hasn't yet
+prepared a higher ballot.  Before replying, it makes sure it marks the
+ballot as prepared (as the particular acceptor may not have received
+the associated prepare request earlier), and updates its accepted
+ballot and the new value.
+ ***************************************************************************)
+AcceptRsp(a) ==
+    /\ \E m \in msgs :
+        /\ m.type = "accept-req"
+        /\ m.bal \geq prepared[a]
+        /\ prepared' = [prepared EXCEPT ![a] = m.bal]
+        /\ accepted' = [accepted EXCEPT ![a] = m.bal]
+        /\ value'    = [value    EXCEPT ![a] = m.newVal]
+        /\ Send([
+                    acc      |-> a,
+                    type     |-> "accept-rsp",
+                    accepted |-> m.bal
+                ])
+
+(***************************************************************************
+Next is true if and only if the new state (i.e.  that with primed
+variables) is valid.  This is used to simulate the model by
+constructing new states until we run out of options.  Concretely, the
+below means that either we prepare a ballot, or can react successfully
+to prepare request, or there is an acceptor which can find a message it
+can react to.
+ ***************************************************************************)
 Next == \/ \E b \in Ballot : \/ PrepareReq(b)
                              \/ \E v \in Values : AcceptReq(b, v)
         \/ \E a \in Acceptors : PrepareRsp(a) \/ AcceptRsp(a)
