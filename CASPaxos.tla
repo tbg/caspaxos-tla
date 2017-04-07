@@ -232,8 +232,91 @@ runner uses this to expand all possible behaviors.
  ***************************************************************************)
 Spec == Init /\ [][Next]_<<prepared, accepted, value, msgs>>
 
-DesiredProperties == TypeOK
+(***************************************************************************
+Equipped with a model, what invariants do we want to hold? Or, in other
+words, what exactly is it that we think the algorithm guarantees? Naively,
+each newly committed value should be in some relation to a previous value,
+so when you're not thinking to hard about it, you could hope that when you
+take a committed value A and the previously committed value B, then B was
+created by mutating A. It's not quite as simple, but going down that wrong
+track highlights how to use the model checker to find interesting histories.
+
+If you have a minute, figure out why the above assumption is wrong. You don't
+need more than three ballots and two concurrent proposals.
+ ***************************************************************************)
+
+(***************************************************************************
+For a given ballot, find the acceptors which (at some point in time)
+accepted that ballot.
+ ***************************************************************************)
+AcceptedBy(b) == { a \in Acceptors :
+    \E m \in msgs : /\ m.type = "accept-rsp"
+                    /\ m.acc = a
+                    /\ m.accepted = b }
+
+(***************************************************************************
+For a given ballot, find out whether the ballot was ever accepted by a
+quorum.
+ ***************************************************************************)
+AcceptedByQuorum(b) == \E Q \in Quorums: AcceptedBy(b) \cap Q = Q
+
+(***************************************************************************
+The set of committed ballot numbers.  Note that 0 is trivially
+committed thanks to the initialization of the state.
+ ***************************************************************************)
+CommittedBallots == {b \in Ballot : AcceptedByQuorum(b)} \cup {0}
+
+(***************************************************************************
+For a given ballot b > 0, find the next lowest ballot number which was
+committed (note that this doesn't have to be b-1).
+ ***************************************************************************)
+BallotCommittedBefore(b) == CHOOSE c \in CommittedBallots :
+                                /\ c < b
+                                /\ \A cc \in CommittedBallots :
+                                    cc \geq b \/ cc \leq c
+
+(***************************************************************************
+For a given ballot, collect all the values which an acceptor requested.
+This set will always either be empty or a singleton, but that's not
+something you can tell from this definition, though we assert it below.
+ ***************************************************************************)
+ValuesAt(b) == IF b = 0 THEN {InitialValue}
+               ELSE { v \in Values :
+                        \E m \in msgs :
+                            /\ m.type     = "accept-rsp"
+                            /\ m.accepted = b
+                            /\ \E mm \in msgs :
+                                /\ mm.type   = "accept-req"
+                                /\ mm.bal    = b
+                                /\ mm.newVal = v
+                    }
+OnlyOneValuePerBallot == \A b \in Ballot : Cardinality(ValuesAt(b)) \leq 1
+
+(***************************************************************************
+MutationsLineUp is the main (ill-fated) assertion that each new value
+of the register is based on a previously committed value.
+ ***************************************************************************)
+UnwrapSingleton(s) == CHOOSE v \in s : TRUE \* {x} |-> x
+MutationsLineUp ==
+    \A b \in CommittedBallots \ {0} :
+        LET newVal == UnwrapSingleton(ValuesAt(b))
+            prevCommitBallot == BallotCommittedBefore(b)
+            oldVal == UnwrapSingleton(ValuesAt(prevCommitBallot))
+        IN  newVal = Mutator(b, oldVal)
+
+(***************************************************************************
+DesiredProperties is a formula that we will tell the model checker to
+verify for each state in all valid behaviors.  When it is something
+that actually holds, folks usually call it Inv (meaning an inductive
+invariant), and may try to prove it mechanically using the TLA proof
+checker, but it is a lot of work and often nontrivial.
+
+In our case, there will be behaviors that violate MutationsLineUp.
+ ***************************************************************************)
+DesiredProperties == /\ TypeOK
+                     /\ OnlyOneValuePerBallot
+                     /\ MutationsLineUp
 =============================================================================
 \* Modification History
-\* Last modified Fri Apr 07 02:14:39 EDT 2017 by tschottdorf
+\* Last modified Fri Apr 07 02:26:16 EDT 2017 by tschottdorf
 \* Created Thu Apr 06 02:12:06 EDT 2017 by tschottdorf
