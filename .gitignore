@@ -1,0 +1,4 @@
+CASPaxos.toolbox/Model_1/*.out
+CASPaxos.toolbox/Model_1/CASPaxos.tla
+CASPaxos.toolbox/Model_1/TE.*
+CASPaxos.toolbox/Model_1/FiniteSets.tla
